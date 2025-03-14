@@ -396,7 +396,6 @@ def forward_accumulation(k, max_nodes=None, use_caching=True, cache_file=None, v
             registry.save_to_file(f"{cache_file}_registry_k{max_nodes}_{k}.pkl")
             
         print(f"Completed k={k} in {time.time() - start_time:.2f} seconds")
-        print(results)
         return results, registry
     
     # Recursively compute LF values for (k-1)-regular graphs
@@ -607,7 +606,7 @@ def save_isomorphism_classes(registry, LF_values, k, output_dir="isomorphism_cla
     
     return summary_data
 
-def calculate_sum_statistics(registry, LF_values, max_nodes):
+def calculate_sum_statistics(registry, LF_values, k):
     """
     Calculate the sum Σ (n!/(|Aut(G)|) * LF(G)) for each vertex count,
     where G ranges over all non-isomorphic graphs with that vertex count.
@@ -639,7 +638,7 @@ def calculate_sum_statistics(registry, LF_values, max_nodes):
         sum_value = 0
         
         for cert, lf, aut_size in graph_data:
-            term = (n_factorial / aut_size) * lf
+            term = round(n_factorial * lf) // round(aut_size)
             sum_value += term
             # print(f"  Graph {cert.hex()[:8]}: n!/{aut_size} * {lf} = {term}")
         
@@ -808,7 +807,7 @@ def main():
         print(f"\nFound {len(LF_values)} isomorphism classes of {k}-regular one-factorizable graphs")
         
         # Calculate sum statistics
-        sum_stats = calculate_sum_statistics(registry, LF_values, args.max_nodes)
+        sum_stats = calculate_sum_statistics(registry, LF_values, k)
         
         # Store in all_sums
         for n, sum_value in sum_stats.items():
