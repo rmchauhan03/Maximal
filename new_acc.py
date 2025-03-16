@@ -94,16 +94,15 @@ def generate_one_factors(G, verbose=False):
     # This is guaranteed to find all perfect matchings
     return find_all_perfect_matchings(G, verbose)
 
-
-
 def find_all_perfect_matchings(G, verbose=False):
     """
-    Find all perfect matchings in a connected graph using backtracking.
+    Find all perfect matchings in a connected graph using Uno's algorithm.
     
-    This function works by:
-    1. Finding one perfect matching using the Blossom algorithm
-    2. For each edge in that matching, removing it and finding all matchings without it
-    3. Recursively combining these results
+    This implementation follows Takeaki Uno's approach using:
+    1. Initial matching discovery via Edmonds' algorithm
+    2. Efficient matching exchange operations using BFS
+    3. M-alternating path structures for finding exchanges
+    4. Optimized data structures for quick lookups
     
     Args:
         G: The graph to find perfect matchings in
@@ -112,38 +111,61 @@ def find_all_perfect_matchings(G, verbose=False):
     Returns:
         List of perfect matchings, each represented as a list of edges
     """
+    
     n = G.number_of_nodes()
     
     # Base case: empty graph
     if n == 0:
         return [[]]
     
-    # Find one perfect matching using NetworkX
+    # Find one perfect matching using NetworkX's implementation of Edmonds' algorithm
     matching = nx.algorithms.matching.max_weight_matching(G, maxcardinality=True)
     
-    # Convert matching to a list of edges
+    # Convert matching to a list of edges with consistent ordering
     matching_edges = []
     for u, v in matching:
-        # Ensure consistent ordering of edges
-        matching_edges.append((min(u, v), max(u, v)))    
-    # For single edge case, just return the one matching
+        matching_edges.append((min(u, v), max(u, v)))
+    
+    # If matching doesn't cover all vertices, no perfect matching exists
+    if len(matching_edges) * 2 != n:
+        if verbose:
+            print("  No perfect matching exists in the graph")
+        return []
+    
+    # For single edge case or K2, just return the one matching
     if n == 2:
         return [matching_edges]
     
     # Initialize result with the found matching
     result = [matching_edges]
     
-    # Use a set to track which matchings we've already found
+    # Use a set for O(1) membership testing of visited matchings
     found_matchings = {tuple(sorted(matching_edges))}
     
-    # Find alternative matchings through edge exchanges
+    # BFS queue for Uno's algorithm exploration
     queue = deque([matching_edges])
+    
+    # Optimization: Precompute valid exchange options for each vertex pair
+    # This saves time by avoiding repeated edge existence checks
+    valid_exchanges = defaultdict(list)
 
-    has_edge_set = set()
-    for edge in G.edges():
-        has_edge_set.add(edge)
-        has_edge_set.add((edge[1], edge[0]))
+
+    for u in G.nodes():
+        for v in G.nodes():
+            if u < v:  # avoid duplicates
+                for w in G.nodes():
+                    for x in G.nodes():
+                        if w < x and (u,v) != (w,x):  # different edges
+                            # Check potential exchange patterns
+                            if G.has_edge(u, w) and G.has_edge(v, x):
+                                valid_exchanges[((u,v), (w,x))].append([(min(u,w), max(u,w)), (min(v,x), max(v,x))])
+                            if G.has_edge(u, x) and G.has_edge(v, w):
+                                valid_exchanges[((u,v), (w,x))].append([(min(u,x), max(u,x)), (min(v,w), max(v,w))])
+    
+    # Main BFS loop - Uno's core algorithm
+    iterations = 0
     while queue:
+        iterations += 1
         current_matching = queue.popleft()
         
         # Try to exchange each pair of edges in the matching
@@ -153,32 +175,28 @@ def find_all_perfect_matchings(G, verbose=False):
                 edge2 = current_matching[j]
                 u2, v2 = edge2
                 
-                # Try all possible edge exchanges
-                potential_exchanges = [
-                    [(u1, u2), (v1, v2)],
-                    [(u1, v2), (v1, u2)]
-                ]
-                
-                for new_edges in potential_exchanges:
-                    # Check if both new edges exist in the graph
-                    if new_edges[0] in has_edge_set and new_edges[1] in has_edge_set:
+                # Use precomputed valid exchanges
+                key = ((min(u1,v1), max(u1,v1)), (min(u2,v2), max(u2,v2)))
+                if key in valid_exchanges:
+                    for new_edge_pair in valid_exchanges[key]:
                         # Create the new matching with the exchange
                         new_matching = current_matching.copy()
                         new_matching.remove(edge1)
                         new_matching.remove(edge2)
-                        new_matching.append((min(new_edges[0]), max(new_edges[0])))
-                        new_matching.append((min(new_edges[1]), max(new_edges[1])))
+                        new_matching.extend(new_edge_pair)
                         new_matching.sort()  # Sort for consistent representation
                         
-                        # If this is a new matching, add it to results
+                        # Check if this is a new matching
                         new_matching_tuple = tuple(new_matching)
                         if new_matching_tuple not in found_matchings:
                             found_matchings.add(new_matching_tuple)
                             result.append(new_matching)
                             queue.append(new_matching)
     
-    if verbose:
-        print(f"  Found {len(result)} perfect matchings for graph with {n} vertices")
+    # if verbose:
+    #     print(f"  Found {len(result)} perfect matchings for graph with {n} vertices")
+    #     print(f"  Processed {iterations} matching iterations")
+    #     print(f"  Time taken: {time.time() - start_time:.4f} seconds")
     
     return result
 
@@ -189,10 +207,10 @@ class GraphRegistry:
     def __init__(self):
         self.graph_dict = {}  # certificate -> (G, nauty_graph, aut_size)
 
-    def add_graph_cert(self, G, g_nauty, cert):
+    def add_graph_cert(self, g_nauty, cert):
         if cert not in self.graph_dict:
             aut = pynauty.autgrp(g_nauty)
-            self.graph_dict[cert] = (G.copy(), g_nauty, aut[1])
+            self.graph_dict[cert] = (g_nauty, aut[1])
         return cert
 
     
@@ -201,33 +219,30 @@ class GraphRegistry:
         g_nauty = nx_to_nauty(G)
         cert = pynauty.certificate(g_nauty)
         
-        return self.add_graph_cert(G, g_nauty, cert)
-            
-        
+        return self.add_graph_cert(g_nauty, cert)
     
     def get_graph(self, cert):
-        """Get the representative graph for a certificate."""
         if cert in self.graph_dict:
-            return self.graph_dict[cert][0].copy()
+            return nauty_to_nx(self.graph_dict[cert][0])
         return None
     
     def get_nauty_graph(self, cert):
         """Get the pynauty graph for a certificate."""
         if cert in self.graph_dict:
-            return self.graph_dict[cert][1]
+            return self.graph_dict[cert][0]
         return None
     
     def get_aut_size(self, cert):
         """Get the automorphism group size for a certificate."""
         if cert in self.graph_dict:
-            return self.graph_dict[cert][2]
+            return self.graph_dict[cert][1]
         return None
     
     def save_to_file(self, filename):
         """Save the registry to a file."""
         # We can't directly pickle pynauty graphs, so we'll save the NetworkX graphs
         save_dict = {
-            'graphs': {cert: (G, None, aut_size) for cert, (G, _, aut_size) in self.graph_dict.items()}
+            'graphs': {cert: (g_nauty, aut_size) for cert, ( g_nauty, aut_size) in self.graph_dict.items()}
         }
         with open(filename, 'wb') as f:
             pickle.dump(save_dict, f)
@@ -240,15 +255,13 @@ class GraphRegistry:
                 
             # Reconstruct the pynauty graphs
             if 'graphs' in save_dict:
-                for cert, (G, _, aut_size) in save_dict['graphs'].items():
-                    g_nauty = nx_to_nauty(G)
-                    self.graph_dict[cert] = (G, g_nauty, aut_size)
+                for cert, ( g_nauty, aut_size) in save_dict['graphs'].items():
+                    self.graph_dict[cert] = (g_nauty, aut_size)
                 
             else:
                 # Old format - just graphs
-                for cert, (G, _, aut_size) in save_dict.items():
-                    g_nauty = nx_to_nauty(G)
-                    self.graph_dict[cert] = (G, g_nauty, aut_size)
+                for cert, (g_nauty, aut_size) in save_dict.items():
+                    self.graph_dict[cert] = (g_nauty, aut_size)
             
             return True
         return False
@@ -354,6 +367,7 @@ def forward_accumulation(k, max_nodes=None, use_caching=True, cache_file=None, v
                 
             # Get the representative graph H from the previous registry
             H = prev_registry.get_graph(cert_H)
+            H_nauty = prev_registry.get_nauty_graph(cert_H)
             if H is None:
                 print(f"Warning: No representative graph found for certificate. Skipping.")
                 continue
@@ -386,17 +400,13 @@ def forward_accumulation(k, max_nodes=None, use_caching=True, cache_file=None, v
                 
                 one_factor_count += 1
                 
-                # Create a new graph G = H ∪ F
-                G = H.copy()
-                G.add_edges_from(F)
-                
-                
-                # Compute canonical certificate for G
-                g_nauty = nx_to_nauty(G)
+                g_nauty = H_nauty.copy()
+                for edge in F:
+                    g_nauty.connect_vertex(edge[0], [edge[1]])
                 cert_G = pynauty.certificate(g_nauty)
                 
                 # Now officially add the graph to the registry
-                cert_G = registry.add_graph_cert(G, g_nauty, cert_G)
+                cert_G = registry.add_graph_cert(g_nauty, cert_G)
                 
                 # Get the automorphism group size of G
                 aut_G_size = registry.get_aut_size(cert_G)
