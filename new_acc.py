@@ -362,14 +362,11 @@ def forward_accumulation(k, max_nodes=None, use_caching=True, cache_file=None, v
         
         # Process each isomorphism class
         for i, cert_H in tqdm(enumerate(cert_list), total=len(cert_list)):
-            if i % 10 == 0 or verbose:
-                print(f"  Processing class {i+1}/{len(cert_list)}, found {len(accumulators)} k-regular classes so far")
                 
             # Get the representative graph H from the previous registry
             H = prev_registry.get_graph(cert_H)
             H_nauty = prev_registry.get_nauty_graph(cert_H)
             if H is None:
-                print(f"Warning: No representative graph found for certificate. Skipping.")
                 continue
                 
             # Get the precomputed automorphism group size
@@ -386,19 +383,10 @@ def forward_accumulation(k, max_nodes=None, use_caching=True, cache_file=None, v
             one_factors = generate_one_factors(H_complement, verbose=verbose)
             
             if len(one_factors) == 0:
-                continue
-                
-            if i % 10 == 0 or verbose:
-                print(f"    Found {len(one_factors)} one-factors in the complement")
-            
-            # Process each one-factor
-            one_factor_count = 0
-            
-            for j, F in enumerate(one_factors):
+                continue            
+            for F in one_factors:
                 if not F:
                     continue
-                
-                one_factor_count += 1
                 
                 g_nauty = pynauty.Graph(H_nauty.number_of_vertices, adjacency_dict=H_nauty.adjacency_dict.copy(), vertex_coloring= H_nauty.vertex_coloring.copy())
                 for edge in F:
@@ -419,8 +407,6 @@ def forward_accumulation(k, max_nodes=None, use_caching=True, cache_file=None, v
                 # Update the accumulator
                 accumulators[cert_G] += increment
                 
-                if verbose and j % 100 == 0 and j > 0:
-                    print(f"      Processed {j}/{len(one_factors)} one-factors")
     
     # Compute LF(G) from the accumulators
     results = {}
