@@ -361,7 +361,7 @@ def forward_accumulation(k, max_nodes=None, use_caching=True, cache_file=None, v
         print(f"Processing {len(cert_list)} {k-1}-regular graphs with {n_vertices} vertices")
         
         # Process each isomorphism class
-        for i, cert_H in enumerate(cert_list):
+        for i, cert_H in tqdm(enumerate(cert_list), total=len(cert_list)):
             if i % 10 == 0 or verbose:
                 print(f"  Processing class {i+1}/{len(cert_list)}, found {len(accumulators)} k-regular classes so far")
                 
@@ -394,13 +394,13 @@ def forward_accumulation(k, max_nodes=None, use_caching=True, cache_file=None, v
             # Process each one-factor
             one_factor_count = 0
             
-            for j, F in tqdm(enumerate(one_factors)):
+            for j, F in enumerate(one_factors):
                 if not F:
                     continue
                 
                 one_factor_count += 1
                 
-                g_nauty = H_nauty.copy()
+                g_nauty = pynauty.Graph(H_nauty.number_of_vertices, adjacency_dict=H_nauty.adjacency_dict.copy(), vertex_coloring= H_nauty.vertex_coloring.copy())
                 for edge in F:
                     g_nauty.connect_vertex(edge[0], [edge[1]])
                 cert_G = pynauty.certificate(g_nauty)
