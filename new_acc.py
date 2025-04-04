@@ -111,27 +111,9 @@ def prune_edges(AllFac, edges):
         AllFac = AllFac[mask]
     return AllFac
 
-def rows_to_edges(rows):
-    def factor_to_edges(factor):
-        """
-        Convert a one-factor array to a list of sorted edges.
-        """
-        edges = []
-        
-        # Only add each edge once by ensuring i < factor[i]
-        for i in range(len(factor)):
-            if i < factor[i]:
-                edges.append((i, factor[i]))
-        
-        # Sort edges lexicographically
-        edges.sort()
-        return edges
-
-    return [factor_to_edges(row) for row in rows]
 
 def GenerateOneFactor(H):
-    return rows_to_edges(prune_edges(all_one_factors(H.number_of_nodes()), H.edges))
-
+    return prune_edges(all_one_factors(H.number_of_nodes()), H.edges)
 
 class GraphRegistry:
     """
@@ -313,12 +295,13 @@ def forward_accumulation(k, max_nodes=None, use_caching=True, cache_file=None, v
             if len(one_factors) == 0:
                 continue            
             for F in one_factors:
-                if not F:
+                if len(F) == 0:
                     continue
                 
                 g_nauty = pynauty.Graph(H_nauty.number_of_vertices, adjacency_dict=H_nauty.adjacency_dict.copy(), vertex_coloring= H_nauty.vertex_coloring.copy())
-                for edge in F:
-                    g_nauty.connect_vertex(edge[0], [edge[1]])
+                for i in range(len(F)):
+                    if F[i] > i:
+                        g_nauty.connect_vertex(i, F[i])
                 cert_G = pynauty.certificate(g_nauty)
                 
                 # Now officially add the graph to the registry
