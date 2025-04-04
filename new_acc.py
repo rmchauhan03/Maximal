@@ -1,13 +1,14 @@
 import pynauty
 import networkx as nx
-import itertools
-from collections import defaultdict, deque
+from collections import defaultdict
 import time
 import pickle
 import os
 from math import factorial
 import json
 from tqdm import tqdm
+from functools import lru_cache
+import numpy as np
 
 def nx_to_nauty(G):
     """Convert a NetworkX graph to a pynauty graph."""
@@ -35,170 +36,102 @@ def nauty_to_nx(g_nauty):
     
     return G
 
-def find_one_factor(G):
-    """Find a one-factor (perfect matching) in G if it exists."""
-    n = G.number_of_nodes()
+@lru_cache(maxsize=14)
+def all_one_factors(n):
+    """
+    Generate a numpy array containing all one-factors of a complete graph on n vertices.
+    
+    Each row is a one-factor, represented as a permutation where the value at index i
+    indicates the vertex that vertex i is paired with.
+    
+    Parameters:
+    -----------
+    n : int
+        Number of vertices in the complete graph. Must be even.
+    
+    Returns:
+    --------
+    numpy.ndarray
+        Array of shape (m, n) where m is the number of one-factors.
+    
+    Notes:
+    ------
+    - A one-factor (or perfect matching) is a subset of edges where each vertex 
+      is connected to exactly one other vertex.
+    - For a complete graph on n vertices (where n is even), there are (n-1)!!
+      different one-factors, where (n-1)!! is the double factorial of (n-1).
+    
+    Examples:
+    ---------
+    >>> all_one_factors(4)
+    array([[1, 0, 3, 2],
+           [2, 3, 0, 1],
+           [3, 2, 1, 0]])
+    
+    >>> len(all_one_factors(6))
+    15  # (6-1)!! = 5!! = 5 * 3 * 1 = 15
+    """
     if n % 2 != 0:
-        return None  # No perfect matching exists for odd number of vertices
+        raise ValueError("n must be even for a one-factor to exist")
     
-    try:
-        matching = nx.algorithms.matching.max_weight_matching(G, maxcardinality=True)
-        if len(matching) * 2 != n:
-            return None  # No perfect matching exists
-        return [(min(u, v), max(u, v)) for u, v in matching]
-    except:
-        return None  # Error in finding matching
+    all_factors = []
     
-def generate_one_factors(G, verbose=False):
-    """
-    Generate ALL one-factors (perfect matchings) in a graph G using NetworkX's algorithms.
-    This approach uses the maximum_matching algorithm repeatedly to find all perfect matchings.
-    
-    Args:
-        G: The graph to find one-factors in
-        verbose: Whether to print verbose information
+    def backtrack(factor, unmatched):
+        """Recursively build all possible one-factors"""
+        if not unmatched:
+            # All vertices have been matched
+            all_factors.append(factor.copy())
+            return
         
-    Returns:
-        List of one-factors, where each one-factor is a list of edges
-    """
+        # Pick the first unmatched vertex
+        v = unmatched[0]
+        
+        # Try matching it with each of the remaining unmatched vertices
+        for u in unmatched[1:]:
+            # Match v with u and u with v
+            factor[v] = u
+            factor[u] = v
+            
+            # Recursively match the remaining vertices
+            new_unmatched = [x for x in unmatched if x != v and x != u]
+            backtrack(factor, new_unmatched)
     
-    if min(dict(G.degree()).values()) == 0:
-        if verbose:
-            print("  No one-factors: Graph has isolated vertices")
-        return []
+    # Initialize factor array
+    factor = np.zeros(n, dtype=int)
+    unmatched = list(range(n))
     
-    # For disconnected graphs, handle components separately
-    if not nx.is_connected(G):
-        components = list(nx.connected_components(G))
+    backtrack(factor, unmatched)
+    
+    return np.array(all_factors)
 
-        # Generate factors for each component
-        component_factors = []
-        for comp in components:
-            subgraph = G.subgraph(comp)
-            factors = generate_one_factors(subgraph, verbose)
-            if not factors:  # If any component has no one-factors, the graph has none
-                return []
-            component_factors.append(factors)
-        
-        # Combine factors from all components (Cartesian product)
-        result = []
-        for combination in itertools.product(*component_factors):
-            combined = []
-            for factor in combination:
-                combined.extend(factor)
-            result.append(combined)
-        
-        return result
-    
-    # For connected graphs, use a backtracking algorithm with edge removal
-    # This is guaranteed to find all perfect matchings
-    return find_all_perfect_matchings(G, verbose)
+def prune_edges(AllFac, edges):
+    # Get all rows where the specified edge is not present
+    for edge in edges:
+        mask = AllFac[:, edge[0]] != edge[1]
+        AllFac = AllFac[mask]
+    return AllFac
 
-def find_all_perfect_matchings(G, verbose=False):
-    """
-    Find all perfect matchings in a connected graph using Uno's algorithm.
-    
-    This implementation follows Takeaki Uno's approach using:
-    1. Initial matching discovery via Edmonds' algorithm
-    2. Efficient matching exchange operations using BFS
-    3. M-alternating path structures for finding exchanges
-    4. Optimized data structures for quick lookups
-    
-    Args:
-        G: The graph to find perfect matchings in
-        verbose: Whether to print verbose information
+def rows_to_edges(rows):
+    def factor_to_edges(factor):
+        """
+        Convert a one-factor array to a list of sorted edges.
+        """
+        edges = []
         
-    Returns:
-        List of perfect matchings, each represented as a list of edges
-    """
-    
-    n = G.number_of_nodes()
-    
-    # Base case: empty graph
-    if n == 0:
-        return [[]]
-    
-    # Find one perfect matching using NetworkX's implementation of Edmonds' algorithm
-    matching = nx.algorithms.matching.max_weight_matching(G, maxcardinality=True)
-    
-    # Convert matching to a list of edges with consistent ordering
-    matching_edges = []
-    for u, v in matching:
-        matching_edges.append((min(u, v), max(u, v)))
-    
-    # If matching doesn't cover all vertices, no perfect matching exists
-    if len(matching_edges) * 2 != n:
-        if verbose:
-            print("  No perfect matching exists in the graph")
-        return []
-    
-    # For single edge case or K2, just return the one matching
-    if n == 2:
-        return [matching_edges]
-    
-    # Initialize result with the found matching
-    result = [matching_edges]
-    
-    # Use a set for O(1) membership testing of visited matchings
-    found_matchings = {tuple(sorted(matching_edges))}
-    
-    # BFS queue for Uno's algorithm exploration
-    queue = deque([matching_edges])
-    
-    # Optimization: Precompute valid exchange options for each vertex pair
-    # This saves time by avoiding repeated edge existence checks
-    valid_exchanges = defaultdict(list)
-
-
-    for u in G.nodes():
-        for v in G.nodes():
-            if u < v:  # avoid duplicates
-                for w in G.nodes():
-                    for x in G.nodes():
-                        if w < x and (u,v) != (w,x):  # different edges
-                            # Check potential exchange patterns
-                            if G.has_edge(u, w) and G.has_edge(v, x):
-                                valid_exchanges[((u,v), (w,x))].append([(min(u,w), max(u,w)), (min(v,x), max(v,x))])
-                            if G.has_edge(u, x) and G.has_edge(v, w):
-                                valid_exchanges[((u,v), (w,x))].append([(min(u,x), max(u,x)), (min(v,w), max(v,w))])
-    
-    # Main BFS loop - Uno's core algorithm
-    iterations = 0
-    while queue:
-        iterations += 1
-        current_matching = queue.popleft()
+        # Only add each edge once by ensuring i < factor[i]
+        for i in range(len(factor)):
+            if i < factor[i]:
+                edges.append((i, factor[i]))
         
-        # Try to exchange each pair of edges in the matching
-        for i, edge1 in enumerate(current_matching):
-            u1, v1 = edge1
-            for j in range(i+1, len(current_matching)):
-                edge2 = current_matching[j]
-                u2, v2 = edge2
-                
-                # Use precomputed valid exchanges
-                key = ((min(u1,v1), max(u1,v1)), (min(u2,v2), max(u2,v2)))
-                if key in valid_exchanges:
-                    for new_edge_pair in valid_exchanges[key]:
-                        # Create the new matching with the exchange
-                        new_matching = current_matching.copy()
-                        new_matching.remove(edge1)
-                        new_matching.remove(edge2)
-                        new_matching.extend(new_edge_pair)
-                        new_matching.sort()  # Sort for consistent representation
-                        
-                        # Check if this is a new matching
-                        new_matching_tuple = tuple(new_matching)
-                        if new_matching_tuple not in found_matchings:
-                            found_matchings.add(new_matching_tuple)
-                            result.append(new_matching)
-                            queue.append(new_matching)
-    
-    # if verbose:
-    #     print(f"  Found {len(result)} perfect matchings for graph with {n} vertices")
-    #     print(f"  Processed {iterations} matching iterations")
-    #     print(f"  Time taken: {time.time() - start_time:.4f} seconds")
-    
-    return result
+        # Sort edges lexicographically
+        edges.sort()
+        return edges
+
+    return [factor_to_edges(row) for row in rows]
+
+def GenerateOneFactor(H):
+    return rows_to_edges(prune_edges(all_one_factors(H.number_of_nodes()), H.edges))
+
 
 class GraphRegistry:
     """
@@ -374,13 +307,8 @@ def forward_accumulation(k, max_nodes=None, use_caching=True, cache_file=None, v
             
             # The one-factorization count for H
             LF_H = LF_prev[cert_H]
-            
-            # The complement graph H̄ with respect to the complete graph
-            H_complement = nx.complement(H)
-            
-            # Find ALL possible one-factors in H̄ - important for correctness
-            # Don't limit one-factors for small graphs to ensure complete enumeration
-            one_factors = generate_one_factors(H_complement, verbose=verbose)
+
+            one_factors = GenerateOneFactor(H)
             
             if len(one_factors) == 0:
                 continue            
@@ -480,8 +408,8 @@ def save_isomorphism_classes(registry, LF_values, k, output_dir="isomorphism_cla
         }
     }
     
-    with open(f"{output_dir}/summary_k{k}.json", 'w') as f:
-        json.dump(summary_data, f, indent=2)
+    # with open(f"{output_dir}/summary_k{k}.json", 'w') as f:
+    #     json.dump(summary_data, f, indent=2)
     
     # Save detailed files for each vertex count
     for n_vertices, graphs in vertex_count_to_graphs.items():
@@ -490,8 +418,8 @@ def save_isomorphism_classes(registry, LF_values, k, output_dir="isomorphism_cla
         
         # Create output file
         filename = f"{output_dir}/k{k}_n{n_vertices}.json"
-        with open(filename, 'w') as f:
-            json.dump(graphs, f, indent=2)
+        # with open(filename, 'w') as f:
+        #     json.dump(graphs, f, indent=2)
         
         print(f"Saved {len(graphs)} isomorphism classes of {k}-regular graphs on {n_vertices} vertices to {filename}")
     
