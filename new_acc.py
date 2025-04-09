@@ -6,9 +6,12 @@ import pickle
 import os
 from math import factorial
 import json
-from tqdm import tqdm
 from functools import lru_cache
 import numpy as np
+from multiprocessing import Process, cpu_count
+
+
+THREAD_COUNT = cpu_count()
 
 def nx_to_nauty(G):
     """Convert a NetworkX graph to a pynauty graph."""
@@ -127,6 +130,12 @@ class GraphRegistry:
             aut = pynauty.autgrp(g_nauty)
             self.graph_dict[cert] = (g_nauty, aut[1])
         return cert
+    
+    def merge_graph(self, other):
+        for item in other.graph_dict:
+            if item in self.graph_dict:
+                continue
+            self.graph_dict[item] = other.graph_dict[item]
 
     
     def add_graph(self, G):
@@ -181,7 +190,58 @@ class GraphRegistry:
             return True
         return False
 
-    
+def process_class(c, T, cert_list, prev_registry, LF_prev):
+
+    registry = GraphRegistry()
+    accumulators = defaultdict(float)  # Using Python's built-in float type
+
+    _i = c - T
+    while (_i + T) < len(cert_list):
+        _i += T
+        cert_H = cert_list[_i]
+            
+        # Get the representative graph H from the previous registry
+        H = prev_registry.get_graph(cert_H)
+        H_nauty = prev_registry.get_nauty_graph(cert_H)
+        if H is None:
+            continue
+            
+        # Get the precomputed automorphism group size
+        aut_H_size = prev_registry.get_aut_size(cert_H)
+        
+        # The one-factorization count for H
+        LF_H = LF_prev[cert_H]
+
+        one_factors = GenerateOneFactor(H)
+        
+        if len(one_factors) == 0:
+            continue            
+        for F in one_factors:
+            if len(F) == 0:
+                continue
+            
+            g_nauty = pynauty.Graph(H_nauty.number_of_vertices, adjacency_dict=H_nauty.adjacency_dict.copy(), vertex_coloring= H_nauty.vertex_coloring.copy())
+            for i in range(len(F)):
+                if F[i] > i:
+                    g_nauty.connect_vertex(i, F[i])
+            cert_G = pynauty.certificate(g_nauty)
+            
+            # Now officially add the graph to the registry
+            cert_G = registry.add_graph_cert(g_nauty, cert_G)
+            
+            # Get the automorphism group size of G
+            aut_G_size = registry.get_aut_size(cert_G)
+            
+            # Calculate the contribution according to equation (5) in the paper:
+            # The ratio |Aut(H ∪ F)|/|Aut(H)| gives how many times this graph is visited
+            ratio = aut_G_size / aut_H_size  # Standard Python float division
+            increment = ratio * LF_H
+            
+            # Update the accumulator
+            accumulators[cert_G] += increment
+    with open(f'{c}.pkl', 'wb') as file:
+        pickle.dump((accumulators, registry), file)
+
 def forward_accumulation(k, max_nodes=None, use_caching=True, cache_file=None, verbose=False):
     """
     Implement the forward accumulation approach to compute LF(G) for all
@@ -266,57 +326,30 @@ def forward_accumulation(k, max_nodes=None, use_caching=True, cache_file=None, v
             vertex_to_certs[H.number_of_nodes()].append(cert_H)
     
     print(f"Processing {len(LF_prev)} isomorphism classes of {k-1}-regular graphs")
-    
-    # Track the total number of one-factorizations found
-    total_onefactorizations = 0
-    
+        
     # Process smaller graphs first
     for n_vertices in sorted(vertex_to_certs.keys()):
         cert_list = vertex_to_certs[n_vertices]
         print(f"Processing {len(cert_list)} {k-1}-regular graphs with {n_vertices} vertices")
         
         # Process each isomorphism class
-        for i, cert_H in tqdm(enumerate(cert_list), total=len(cert_list)):
-                
-            # Get the representative graph H from the previous registry
-            H = prev_registry.get_graph(cert_H)
-            H_nauty = prev_registry.get_nauty_graph(cert_H)
-            if H is None:
-                continue
-                
-            # Get the precomputed automorphism group size
-            aut_H_size = prev_registry.get_aut_size(cert_H)
-            
-            # The one-factorization count for H
-            LF_H = LF_prev[cert_H]
+        threads = []
+        for i in range(THREAD_COUNT):
+            threads.append(Process(target=process_class, args=(i, THREAD_COUNT, cert_list, prev_registry, LF_prev)))
+            threads[-1].start()
+        
+        for i in range(THREAD_COUNT):
+            threads[i].join()
 
-            one_factors = GenerateOneFactor(H)
-            
-            if len(one_factors) == 0:
-                continue            
-            for F in one_factors:
-                if len(F) == 0:
-                    continue
-                
-                g_nauty = pynauty.Graph(H_nauty.number_of_vertices, adjacency_dict=H_nauty.adjacency_dict.copy(), vertex_coloring= H_nauty.vertex_coloring.copy())
-                for i in range(len(F)):
-                    if F[i] > i:
-                        g_nauty.connect_vertex(i, F[i])
-                cert_G = pynauty.certificate(g_nauty)
-                
-                # Now officially add the graph to the registry
-                cert_G = registry.add_graph_cert(g_nauty, cert_G)
-                
-                # Get the automorphism group size of G
-                aut_G_size = registry.get_aut_size(cert_G)
-                
-                # Calculate the contribution according to equation (5) in the paper:
-                # The ratio |Aut(H ∪ F)|/|Aut(H)| gives how many times this graph is visited
-                ratio = aut_G_size / aut_H_size  # Standard Python float division
-                increment = ratio * LF_H
-                
-                # Update the accumulator
-                accumulators[cert_G] += increment
+
+        for i in range(THREAD_COUNT):
+            if os.path.exists(f"{i}.pkl"):
+                with open(f"{i}.pkl", 'rb') as file:
+                    acc, reg =pickle.load(file)
+                for x in acc:
+                    accumulators[x] += acc[x]
+                registry.merge_graph(reg)
+                os.remove(f"{i}.pkl")
                 
     
     # Compute LF(G) from the accumulators
@@ -332,7 +365,6 @@ def forward_accumulation(k, max_nodes=None, use_caching=True, cache_file=None, v
         registry.save_to_file(f"{cache_file}_registry_k{max_nodes}_{k}.pkl")
     
     print(f"Completed k={k} in {time.time() - start_time:.2f} seconds")
-    print(f"Total one-factorizations: {total_onefactorizations / k}")
     return results, registry
 
 
@@ -391,8 +423,8 @@ def save_isomorphism_classes(registry, LF_values, k, output_dir="isomorphism_cla
         }
     }
     
-    # with open(f"{output_dir}/summary_k{k}.json", 'w') as f:
-    #     json.dump(summary_data, f, indent=2)
+    with open(f"{output_dir}/summary_k{k}.json", 'w') as f:
+        json.dump(summary_data, f, indent=2)
     
     # Save detailed files for each vertex count
     for n_vertices, graphs in vertex_count_to_graphs.items():
@@ -472,29 +504,6 @@ def save_sum_statistics(sums_by_k_n, output_dir="statistics"):
             str(k): {
                 str(n): sum_value for n, sum_value in values.items()
             } for k, values in data_by_k.items()
-        },
-        "expected_values": {
-            # Known values (calculated mathematically)
-            "1": {
-                "2": 1.0,
-                "4": 3.0,
-                "6": 15.0,
-                "8": 105.0,
-                "10": 945.0,
-                "12": 10395.0
-            },
-            "2": {
-                "4": 3.0,
-                "6": 40.0,
-                "8": 1260.0,
-                "10": 113400.0,
-                "12": 22680000.0
-            },
-            "3": {
-                "4": 1.0,
-                "6": 15.0,
-                "8": 6300.0
-            }
         }
     }
     
@@ -507,8 +516,7 @@ def save_sum_statistics(sums_by_k_n, output_dir="statistics"):
             "regularity": k,
             "sums_by_vertex_count": {
                 str(n): sum_value for n, sum_value in sorted(values.items())
-            },
-            "expected_values": all_data["expected_values"].get(str(k), {})
+            }
         }
         
         with open(f"{output_dir}/sums_k{k}.json", 'w') as f:
