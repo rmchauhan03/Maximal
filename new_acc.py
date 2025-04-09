@@ -195,10 +195,10 @@ def process_class(c, T, cert_list, prev_registry, LF_prev):
     registry = GraphRegistry()
     accumulators = defaultdict(float)  # Using Python's built-in float type
 
-    _i = c - T
-    while (_i + T) < len(cert_list):
-        _i += T
+    _i = 0
+    while _i < len(cert_list):
         cert_H = cert_list[_i]
+        _i += 1
             
         # Get the representative graph H from the previous registry
         H = prev_registry.get_graph(cert_H)
@@ -334,11 +334,18 @@ def forward_accumulation(k, max_nodes=None, use_caching=True, cache_file=None, v
         
         # Process each isomorphism class
         threads = []
+        cl = {i : [] for i in range(THREAD_COUNT)}
+        for ii in range(len(cert_list)):
+            cl[ii % THREAD_COUNT].append(cert_list[ii])
+        del cert_list
+        del vertex_to_certs[n_vertices]
         for i in range(THREAD_COUNT):
-            threads.append(Process(target=process_class, args=(i, THREAD_COUNT, cert_list, prev_registry, LF_prev)))
+            if len(cl[i]) == 0:
+                continue
+            threads.append(Process(target=process_class, args=(i, THREAD_COUNT, cl[i], prev_registry, LF_prev)))
             threads[-1].start()
         
-        for i in range(THREAD_COUNT):
+        for i in range(len(threads)):
             threads[i].join()
 
 
